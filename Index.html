@@ -1,0 +1,856 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multiplayer Slot-Locked Pong with Power-ups</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        
+        /* Custom Game Styling */
+        #game-container {
+            width: 100%;
+            max-width: 800px;
+            height: 500px;
+            margin: auto;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            overflow: hidden;
+            position: relative;
+        }
+
+        #game-canvas {
+            display: block;
+            background-color: transparent;
+        }
+
+        /* Responsive utilities for canvas container */
+        @media (max-width: 640px) { #game-container { height: 400px; } }
+        
+        /* General UI styling */
+        .btn { @apply px-4 py-2 font-bold rounded-lg shadow-md transition duration-150; }
+        .btn-green { @apply bg-green-600 text-white hover:bg-green-700; }
+        .btn-indigo { @apply bg-indigo-600 text-white hover:bg-indigo-700; }
+        .btn-red { @apply bg-red-600 text-white hover:bg-red-700; }
+        .btn-disabled { @apply bg-gray-500 text-gray-300 cursor-not-allowed; }
+        .panel { @apply bg-gray-800 p-6 rounded-xl shadow-xl; }
+    </style>
+</head>
+<body class="bg-gray-900 text-white min-h-screen p-4 flex flex-col items-center">
+
+    <h1 class="text-4xl font-extrabold mb-4 text-indigo-400">Slot-Locked Multiplayer Pong</h1>
+    <p id="status-message" class="text-lg mb-4 text-gray-400">Initializing...</p>
+
+    <!-- Main Lobby View -->
+    <section id="lobby-view" class="w-full max-w-xl space-y-6">
+        <div class="panel">
+            <h2 class="text-2xl font-bold text-center mb-4 text-indigo-300">Select a Server (1-3)</h2>
+            <div id="server-list" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <!-- Server buttons generated here -->
+            </div>
+            <p class="text-sm text-center mt-4 text-gray-400">Server status updates in real-time.</p>
+        </div>
+    </section>
+
+    <!-- Slot Selection View -->
+    <section id="slot-view" class="w-full max-w-xl space-y-6 hidden">
+        <div class="panel">
+            <h2 class="text-2xl font-bold text-center mb-4">Joining Server <span id="current-server-display" class="text-yellow-400"></span></h2>
+            <p class="text-center text-lg mb-6 text-gray-300">Choose your player slot.</p>
+            <div class="flex justify-center space-x-6">
+                <button id="slot-p1-btn" class="btn btn-indigo flex-1 text-2xl">Player 1 (Host)</button>
+                <button id="slot-p2-btn" class="btn btn-green flex-1 text-2xl">Player 2 (Guest)</button>
+            </div>
+            <p id="slot-status" class="text-center mt-4 text-sm text-gray-400"></p>
+            <button id="back-to-lobby-btn" class="btn btn-red w-full mt-4">Back to Servers</button>
+        </div>
+    </section>
+
+    <!-- Game View -->
+    <section id="game-view" class="hidden w-full max-w-3xl flex flex-col items-center">
+        <!-- Game Info -->
+        <div class="bg-gray-800 p-3 rounded-xl shadow-inner mb-6 w-full max-w-sm">
+            <div class="text-sm font-semibold text-gray-400">Game Room ID:</div>
+            <div id="game-id-display" class="font-mono break-all text-sm text-yellow-400"></div>
+        </div>
+
+        <!-- Game Container and Canvas -->
+        <div id="game-container" class="bg-gray-800 border-2 border-indigo-500">
+            <canvas id="game-canvas"></canvas>
+        </div>
+
+        <!-- Controls and Settings -->
+        <div class="mt-6 w-full max-w-xl panel space-y-4">
+            <div class="flex justify-between items-center">
+                <h2 class="text-xl font-bold text-indigo-300">Controls & Status</h2>
+                <div class="flex space-x-2">
+                    <button id="start-game-btn" class="btn btn-indigo hidden">Start Game</button>
+                    <button id="reset-game-btn" class="btn btn-red hidden">Reset Game</button>
+                    <button id="leave-game-btn" class="btn btn-red">Leave Game</button>
+                </div>
+            </div>
+            
+            <div id="player-role" class="text-lg font-semibold text-center p-2 rounded-lg bg-gray-700">
+                You are: <span id="role-display" class="text-yellow-500">P<span id="player-num-display"></span></span>
+            </div>
+
+            <!-- Theme/Skins Selector -->
+            <div class="flex items-center space-x-4">
+                <label for="theme-select" class="font-semibold text-gray-300">Theme:</label>
+                <select id="theme-select" class="p-2 rounded-lg bg-gray-700 border border-gray-600 text-white flex-grow">
+                    <option value="neon">Neon Grid (Default)</option>
+                    <option value="classic">Classic White</option>
+                    <option value="matrix">Matrix Green</option>
+                </select>
+            </div>
+        </div>
+    </section>
+
+    <script type="module">
+        // Firebase Imports
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, collection, runTransaction, updateDoc, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global Variables
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let app, db, auth;
+        let userId = null;
+        let isAuthReady = false;
+        let currentServerId = null;
+        
+        // Game Constants
+        const NUM_SERVERS = 3;
+        const BALL_SPEED = 4.5;
+        const WINNING_SCORE = 5;
+        const PADDLE_VELOCITY = 6;
+        const PADDLE_HEIGHT_DEFAULT = 70;
+        const POWERUP_DURATION_FRAMES = 300; // 5 seconds at 60fps
+
+        // Power-up Definitions
+        const POWERUP_TYPES = [
+            { type: 'grow', color: '#10B981', symbol: 'G', effect: 'Doubles paddle height.' },
+            { type: 'speed', color: '#FCD34D', symbol: 'S', effect: 'Doubles paddle movement speed.' },
+            { type: 'immune', color: '#6366F1', symbol: 'I', effect: 'Temporary goal immunity.' }
+        ];
+
+        // Game State Definitions
+        const initialGamePlayState = {
+            status: 'waiting',
+            paddle1Y: 50,
+            paddle2Y: 50,
+            score1: 0,
+            score2: 0,
+            ball: { x: 50, y: 50, vx: 0, vy: 0 },
+            theme: 'neon',
+            p1PowerUpTimer: 0,
+            p1ActiveEffect: null, 
+            p2PowerUpTimer: 0,
+            p2ActiveEffect: null,
+            powerUp: null, 
+            lastUpdate: Date.now()
+        };
+
+        // Default state includes player slots (used only for initial document creation)
+        const defaultGameState = {
+            ...initialGamePlayState,
+            p1Id: null,
+            p2Id: null,
+        };
+        
+        // Game State Variables
+        let playerNumber = 0;
+        let isHost = false;
+        let isGameRunning = false;
+        let localState = {};
+        let keys = { ArrowUp: false, ArrowDown: false, w: false, s: false };
+        let unsubscribeServerListener = null;
+
+        // Canvas Setup
+        const canvas = document.getElementById('game-canvas');
+        const ctx = canvas.getContext('2d');
+        const container = document.getElementById('game-container');
+        let gameWidth, gameHeight;
+
+        // UI Elements
+        const statusMessage = document.getElementById('status-message');
+        const playerNumDisplay = document.getElementById('player-num-display');
+        const roleDisplay = document.getElementById('role-display');
+        const gameIdDisplay = document.getElementById('game-id-display');
+        const currentServerDisplay = document.getElementById('current-server-display');
+
+        const lobbyView = document.getElementById('lobby-view');
+        const slotView = document.getElementById('slot-view');
+        const gameView = document.getElementById('game-view');
+        const serverList = document.getElementById('server-list');
+        const slotP1Btn = document.getElementById('slot-p1-btn');
+        const slotP2Btn = document.getElementById('slot-p2-btn');
+        const slotStatus = document.getElementById('slot-status');
+        const backToLobbyBtn = document.getElementById('back-to-lobby-btn');
+
+        const startGameBtn = document.getElementById('start-game-btn');
+        const resetGameBtn = document.getElementById('reset-game-btn');
+        const leaveGameBtn = document.getElementById('leave-game-btn');
+        const themeSelect = document.getElementById('theme-select');
+        
+        // Themes
+        const themes = {
+            neon: { bg: '#1F2937', colorP1: '#06B6D4', colorP2: '#FDE047', colorBall: '#EC4899', colorLine: '#4B5563' },
+            classic: { bg: '#FFFFFF', colorP1: '#000000', colorP2: '#000000', colorBall: '#000000', colorLine: '#CCCCCC' },
+            matrix: { bg: '#000000', colorP1: '#10B981', colorP2: '#10B981', colorBall: '#10B981', colorLine: '#059669' }
+        };
+
+        // --- Utility Functions ---
+
+        function showView(viewId) {
+            lobbyView.classList.add('hidden');
+            slotView.classList.add('hidden');
+            gameView.classList.add('hidden');
+            document.getElementById(viewId).classList.remove('hidden');
+        }
+
+        function getServerRoomId(serverId) {
+            return `pong_game_${appId}_Server${serverId}`;
+        }
+        
+        // --- 1. Initialization and Authentication ---
+
+        function initFirebase() {
+            if (!firebaseConfig) {
+                statusMessage.textContent = "Error: Firebase config not found.";
+                return;
+            }
+            
+            app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            auth = getAuth(app);
+            
+            onAuthStateChanged(auth, async (user) => {
+                if (user) {
+                    userId = user.uid;
+                    isAuthReady = true;
+                    statusMessage.textContent = "Authenticated. Loading server list...";
+                    startLobbyListener();
+                    startInputListeners();
+                    resizeCanvas();
+                    window.addEventListener('resize', resizeCanvas);
+                    showView('lobby-view');
+                } else {
+                    isAuthReady = true;
+                    statusMessage.textContent = "Authentication failed. Using anonymous sign-in.";
+                    // This block should ideally not be reached if the sign-in succeeds below, 
+                    // but it acts as a fallback if the sign-in attempt below fails or results in a non-user state.
+                }
+            });
+
+            if (initialAuthToken) {
+                signInWithCustomToken(auth, initialAuthToken).catch(e => {
+                    console.error("Custom token sign-in failed:", e);
+                    signInAnonymously(auth);
+                });
+            } else {
+                 signInAnonymously(auth);
+            }
+        }
+        
+        // --- 2. Lobby Management (Server Status) ---
+
+        function startLobbyListener() {
+            if (!db || !userId) {
+                console.error("Lobby listener aborted: Firestore or User ID not ready.");
+                return; // Defensive exit to prevent permission denied errors
+            }
+
+            const serversRef = collection(db, "artifacts", appId, "public", "data", "pong_games");
+            onSnapshot(query(serversRef), (querySnapshot) => {
+                const serverData = {};
+                querySnapshot.forEach((doc) => {
+                    const id = doc.id.match(/Server(\d+)/);
+                    if (id && id[1]) {
+                        serverData[id[1]] = doc.data();
+                    }
+                });
+                renderServerList(serverData);
+            });
+        }
+        
+        function renderServerList(serverData) {
+            serverList.innerHTML = '';
+            for (let i = 1; i <= NUM_SERVERS; i++) {
+                const serverId = i.toString();
+                const data = serverData[serverId];
+                
+                let playerCount = (data?.p1Id ? 1 : 0) + (data?.p2Id ? 1 : 0);
+                const isFull = playerCount >= 2;
+                const isMyServer = (data?.p1Id === userId || data?.p2Id === userId);
+
+                const button = document.createElement('button');
+                button.className = `btn flex flex-col items-center justify-center p-4 h-28 border-2 transition-all ${
+                    isMyServer ? 'bg-yellow-500 hover:bg-yellow-600 border-yellow-700' :
+                    isFull ? 'btn-disabled border-gray-600' : 
+                    'btn-indigo border-indigo-700'
+                }`;
+                button.disabled = isFull && !isMyServer;
+                button.dataset.serverId = serverId;
+                button.onclick = () => isMyServer || !isFull ? selectServer(serverId) : null;
+                
+                button.innerHTML = `
+                    <div class="text-2xl font-black mb-1">SERVER ${serverId}</div>
+                    <div class="text-sm font-semibold">${isMyServer ? 'YOUR GAME' : isFull ? 'FULL' : 'JOIN'}</div>
+                    <div class="text-xs mt-1 font-mono">${playerCount} / 2 Players</div>
+                `;
+                serverList.appendChild(button);
+            }
+        }
+        
+        function selectServer(serverId) {
+            currentServerId = serverId;
+            currentServerDisplay.textContent = serverId;
+            showView('slot-view');
+            startSlotListener(serverId);
+        }
+        
+        // --- 3. Slot Management (Player Slot Locking) ---
+
+        function startSlotListener(serverId) {
+            if (!db || !userId) {
+                console.error("Slot listener aborted: Firestore or User ID not ready.");
+                return; // Defensive exit to prevent permission denied errors
+            }
+
+            if (unsubscribeServerListener) unsubscribeServerListener();
+            const roomRef = doc(db, "artifacts", appId, "public", "data", "pong_games", getServerRoomId(serverId));
+
+            unsubscribeServerListener = onSnapshot(roomRef, (docSnapshot) => {
+                const data = docSnapshot.exists() ? docSnapshot.data() : defaultGameState;
+                
+                // If the document was empty, ensure the default state is written
+                if (!docSnapshot.exists()) {
+                    setDoc(roomRef, defaultGameState);
+                }
+
+                localState = data;
+                updateSlotButtons(data);
+                
+                // If in game view, update game UI based on state
+                if (!gameView.classList.contains('hidden')) {
+                     updateGameUI(data);
+                }
+            });
+        }
+        
+        function updateSlotButtons(data) {
+            const isP1Taken = !!data.p1Id;
+            const isP2Taken = !!data.p2Id;
+            const isP1Me = data.p1Id === userId;
+            const isP2Me = data.p2Id === userId;
+
+            // P1 Slot Button
+            slotP1Btn.textContent = isP1Me ? 'P1 (YOUR SLOT)' : (isP1Taken ? `Player 1 (Taken by ${data.p1Id.substring(0, 4)}...)` : 'Player 1 (Host)');
+            slotP1Btn.className = `btn flex-1 text-2xl ${isP1Me ? 'btn-green' : isP1Taken ? 'btn-disabled' : 'btn-indigo'}`;
+            slotP1Btn.disabled = isP1Taken && !isP1Me;
+            slotP1Btn.onclick = () => joinSlot(1);
+
+            // P2 Slot Button
+            slotP2Btn.textContent = isP2Me ? 'P2 (YOUR SLOT)' : (isP2Taken ? `Player 2 (Taken by ${data.p2Id.substring(0, 4)}...)` : 'Player 2 (Guest)');
+            slotP2Btn.className = `btn flex-1 text-2xl ${isP2Me ? 'btn-green' : isP2Taken ? 'btn-disabled' : 'btn-indigo'}`;
+            slotP2Btn.disabled = isP2Taken && !isP2Me;
+            slotP2Btn.onclick = () => joinSlot(2);
+
+            slotStatus.textContent = isP1Taken && isP2Taken ? "Server is full. Waiting for a player to leave." : "Slots are open. Select your role.";
+            
+            if (isP1Me || isP2Me) {
+                playerNumber = isP1Me ? 1 : 2;
+                isHost = isP1Me;
+                startGamePlayView();
+            }
+        }
+        
+        async function joinSlot(slotNum) {
+            if (!userId) return;
+            const roomRef = doc(db, "artifacts", appId, "public", "data", "pong_games", getServerRoomId(currentServerId));
+            const slotKey = `p${slotNum}Id`;
+
+            try {
+                await runTransaction(db, async (transaction) => {
+                    const docSnapshot = await transaction.get(roomRef);
+                    const data = docSnapshot.exists() ? docSnapshot.data() : defaultGameState;
+                    
+                    if (data[slotKey] && data[slotKey] !== userId) {
+                        throw new Error(`Slot ${slotNum} is already taken by ${data[slotKey].substring(0, 4)}...`);
+                    }
+                    
+                    const otherSlotKey = slotNum === 1 ? 'p2Id' : 'p1Id';
+                    if (data[otherSlotKey] === userId) {
+                        transaction.update(roomRef, { [otherSlotKey]: null });
+                    }
+                    
+                    transaction.set(roomRef, { ...data, [slotKey]: userId, lastUpdate: Date.now() }, { merge: true });
+                });
+            } catch (e) {
+                slotStatus.textContent = `Failed to join slot: ${e.message}`;
+                console.error("Slot joining error:", e);
+            }
+        }
+        
+        async function leaveSlot() {
+            if (!userId || !currentServerId || playerNumber === 0) return;
+            const roomRef = doc(db, "artifacts", appId, "public", "data", "pong_games", getServerRoomId(currentServerId));
+            const slotKey = playerNumber === 1 ? 'p1Id' : 'p2Id';
+            
+            try {
+                // When a player leaves, clear their slot ID
+                await updateDoc(roomRef, { [slotKey]: null, lastUpdate: Date.now() });
+                
+                playerNumber = 0;
+                isHost = false;
+                isGameRunning = false;
+                currentServerId = null;
+                localState = {};
+                if (unsubscribeServerListener) unsubscribeServerListener();
+                showView('lobby-view');
+                statusMessage.textContent = "You left the server. Select a new one.";
+            } catch (e) {
+                console.error("Error leaving slot:", e);
+                statusMessage.textContent = "Error leaving server. Check console.";
+            }
+        }
+
+        // --- 4. Game Play View & Logic ---
+
+        function startGamePlayView() {
+            if (playerNumber === 0) return;
+            
+            showView('game-view');
+            gameIdDisplay.textContent = getServerRoomId(currentServerId);
+            playerNumDisplay.textContent = playerNumber;
+            roleDisplay.textContent = playerNumber === 1 ? `P1 (Host - Cyan - ${userId.substring(0, 4)})` : `P2 (Guest - Yellow - ${userId.substring(0, 4)})`;
+            
+            startGameBtn.classList.add('hidden');
+            resetGameBtn.classList.add('hidden');
+            themeSelect.value = localState.theme || 'neon';
+        }
+        
+        function updateGameUI(data) {
+             const canHostStart = isHost && data.p1Id && data.p2Id;
+             const isGameEnd = data.status === 'ended';
+
+            startGameBtn.classList.toggle('hidden', !canHostStart || data.status === 'playing' || isGameEnd);
+            resetGameBtn.classList.toggle('hidden', data.status !== 'waiting' && !isGameEnd);
+            
+            if (data.status === 'playing' && !isGameRunning) {
+                isGameRunning = true;
+                startGameLoop();
+                statusMessage.textContent = "Game in progress! Move your paddle.";
+            } else if (isGameEnd) {
+                isGameRunning = false;
+                statusMessage.textContent = `Game Over! P${data.score1 > data.score2 ? '1' : '2'} WINS!`;
+            } else if (data.status === 'waiting' && canHostStart) {
+                 isGameRunning = false;
+                 statusMessage.textContent = "Both players ready. Host can start the game.";
+            } else if (data.status === 'waiting' && playerNumber > 0 && !canHostStart) {
+                 isGameRunning = false;
+                 statusMessage.textContent = "Waiting for other player to join the server...";
+            }
+            
+            if (themeSelect.value !== data.theme) {
+                 themeSelect.value = data.theme;
+            }
+        }
+
+        function startGame() {
+            if (isHost && localState.p1Id && localState.p2Id && localState.status !== 'playing') {
+                const roomRef = doc(db, "artifacts", appId, "public", "data", "pong_games", getServerRoomId(currentServerId));
+                const initialBall = { x: 50, y: 50, vx: BALL_SPEED, vy: (Math.random() - 0.5) * BALL_SPEED * 0.5 };
+                
+                // Only reset game-specific properties, keep player IDs
+                const startGameState = { 
+                    ...initialGamePlayState,
+                    status: 'playing', 
+                    ball: initialBall
+                };
+
+                updateDoc(roomRef, startGameState).catch(e => console.error("Failed to start game:", e));
+            }
+        }
+        
+        function resetGame() {
+             if (playerNumber > 0) {
+                const roomRef = doc(db, "artifacts", appId, "public", "data", "pong_games", getServerRoomId(currentServerId));
+                // Use initialGamePlayState to reset game without clearing player slots
+                updateDoc(roomRef, initialGamePlayState).catch(e => console.error("Failed to reset game:", e));
+             }
+        }
+
+        // --- 5. Input Handling ---
+        
+        function startInputListeners() {
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'w' || e.key === 's') {
+                    keys[e.key] = true;
+                }
+            });
+            document.addEventListener('keyup', (e) => {
+                if (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'w' || e.key === 's') {
+                    keys[e.key] = false;
+                }
+            });
+            
+            themeSelect.addEventListener('change', () => {
+                if (playerNumber > 0) updateTheme(themeSelect.value);
+            });
+            
+            startGameBtn.addEventListener('click', startGame);
+            resetGameBtn.addEventListener('click', resetGame);
+            leaveGameBtn.addEventListener('click', leaveSlot);
+            backToLobbyBtn.addEventListener('click', () => {
+                 if (unsubscribeServerListener) unsubscribeServerListener();
+                 showView('lobby-view');
+                 statusMessage.textContent = "Select a Server.";
+            });
+        }
+        
+        function updateTheme(theme) {
+            const roomRef = doc(db, "artifacts", appId, "public", "data", "pong_games", getServerRoomId(currentServerId));
+            updateDoc(roomRef, { theme: theme, lastUpdate: Date.now() }).catch(e => console.error("Failed to update theme:", e));
+        }
+
+        function handleInput() {
+            if (playerNumber === 0) return;
+            
+            let dy = 0;
+            let paddleY = 0;
+            let updateKey = '';
+            
+            // Apply speed power-up modifier
+            const speedMultiplier = (playerNumber === 1 && localState.p1ActiveEffect === 'speed') || 
+                                    (playerNumber === 2 && localState.p2ActiveEffect === 'speed') ? 2.0 : 1.0;
+            const currentPaddleVelocity = PADDLE_VELOCITY * speedMultiplier;
+
+            if (playerNumber === 1) {
+                if (keys.w || keys.ArrowUp) dy = -currentPaddleVelocity;
+                if (keys.s || keys.ArrowDown) dy = currentPaddleVelocity;
+                paddleY = localState.paddle1Y;
+                updateKey = 'paddle1Y';
+            } else if (playerNumber === 2) {
+                if (keys.ArrowUp) dy = -currentPaddleVelocity;
+                if (keys.ArrowDown) dy = currentPaddleVelocity;
+                paddleY = localState.paddle2Y;
+                updateKey = 'paddle2Y';
+            }
+            
+            if (updateKey && dy !== 0) {
+                const newY = Math.max(0, Math.min(100, paddleY + dy * (100 / gameHeight)));
+                if (newY !== paddleY) {
+                    const roomRef = doc(db, "artifacts", appId, "public", "data", "pong_games", getServerRoomId(currentServerId));
+                    updateDoc(roomRef, { [updateKey]: newY, lastUpdate: Date.now() }).catch(e => console.error("Failed to update paddle:", e));
+                }
+            }
+        }
+
+
+        // --- 6. Host Game Logic (Only runs if isHost is true) ---
+        
+        function hostGameUpdate() {
+            if (!isHost || !isGameRunning || localState.ball.vx === 0) return;
+
+            let { ball, paddle1Y, paddle2Y, score1, score2, powerUp, p1PowerUpTimer, p2PowerUpTimer, p1ActiveEffect, p2ActiveEffect } = localState;
+            
+            // 1. Move Ball
+            ball.x += ball.vx;
+            ball.y += ball.vy;
+
+            // 2. Wall Collisions (Top/Bottom)
+            if (ball.y < 0 || ball.y > 100) {
+                ball.y = ball.y < 0 ? 0 : 100;
+                ball.vy *= -1;
+            }
+
+            // Calculate current paddle heights for collision detection
+            const p1CurrentHeight = p1ActiveEffect === 'grow' ? PADDLE_HEIGHT_DEFAULT * 2 : PADDLE_HEIGHT_DEFAULT;
+            const p2CurrentHeight = p2ActiveEffect === 'grow' ? PADDLE_HEIGHT_DEFAULT * 2 : PADDLE_HEIGHT_DEFAULT;
+            
+            const p1H_pc = p1CurrentHeight / gameHeight * 100 * 0.5;
+            const p2H_pc = p2CurrentHeight / gameHeight * 100 * 0.5;
+            
+            // P1 (Left) Paddle Check (at x=3%)
+            if (ball.x < 4 && ball.vx < 0) {
+                if (ball.y >= paddle1Y - p1H_pc && ball.y <= paddle1Y + p1H_pc) {
+                    ball.x = 4;
+                    ball.vx *= -1;
+                    const hitPoint = (ball.y - paddle1Y) / p1H_pc;
+                    ball.vy += hitPoint * BALL_SPEED * 0.5;
+                    ball.vx *= 1.05;
+                    if (!powerUp && Math.random() < 0.1) spawnPowerUp();
+                }
+            }
+
+            // P2 (Right) Paddle Check (at x=97%)
+            if (ball.x > 96 && ball.vx > 0) {
+                if (ball.y >= paddle2Y - p2H_pc && ball.y <= paddle2Y + p2H_pc) {
+                    ball.x = 96;
+                    ball.vx *= -1;
+                    const hitPoint = (ball.y - paddle2Y) / p2H_pc;
+                    ball.vy += hitPoint * BALL_SPEED * 0.5;
+                    ball.vx *= 1.05;
+                    if (!powerUp && Math.random() < 0.1) spawnPowerUp();
+                }
+            }
+            
+            // Clamp velocity
+            ball.vx = Math.min(Math.max(ball.vx, -BALL_SPEED * 1.5), BALL_SPEED * 1.5);
+            ball.vy = Math.min(Math.max(ball.vy, -BALL_SPEED), BALL_SPEED);
+            
+            // 4. Power-up Collection
+            if (powerUp && powerUp.active) {
+                const puX = powerUp.x;
+                const puY = powerUp.y;
+                // Check if ball is close enough to collect the power-up (distance squared < 4 means radius < 2%)
+                const distanceSq = (ball.x - puX)**2 + (ball.y - puY)**2;
+                if (distanceSq < 4) {
+                    powerUp.active = false;
+                    const collectedByP1 = ball.vx < 0; // Ball moving left, P1 side collected
+                    
+                    if (collectedByP1) {
+                        // Clear existing timer before setting new one to prevent effect overlap
+                        p1PowerUpTimer = 0; 
+                        p1PowerUpTimer = POWERUP_DURATION_FRAMES;
+                        p1ActiveEffect = powerUp.type;
+                    } else {
+                         // Clear existing timer before setting new one
+                        p2PowerUpTimer = 0; 
+                        p2PowerUpTimer = POWERUP_DURATION_FRAMES;
+                        p2ActiveEffect = powerUp.type;
+                    }
+                }
+            }
+            
+            // 5. Scoring
+            let scored = false;
+            
+            if (ball.x < 0) {
+                // P1 missed (P2 scores)
+                if (p1ActiveEffect !== 'immune') {
+                    score2++;
+                    resetBallState(true);
+                    scored = true;
+                } else {
+                    // P1 is immune, bounce the ball back strongly!
+                    ball.x = 0;
+                    ball.vx = BALL_SPEED * 1.5;
+                    ball.vy += (Math.random() - 0.5) * BALL_SPEED; // Random bounce angle
+                    ball.vx = Math.min(ball.vx, BALL_SPEED * 2);
+                }
+            } else if (ball.x > 100) {
+                // P2 missed (P1 scores)
+                 if (p2ActiveEffect !== 'immune') {
+                    score1++;
+                    resetBallState(false);
+                    scored = true;
+                } else {
+                    // P2 is immune, bounce the ball back strongly!
+                    ball.x = 100;
+                    ball.vx = -BALL_SPEED * 1.5;
+                    ball.vy += (Math.random() - 0.5) * BALL_SPEED;
+                    ball.vx = Math.min(ball.vx, -BALL_SPEED * 1.5);
+                }
+            }
+            
+            // 6. Power-up Timers & Removal
+            if (p1PowerUpTimer > 0) {
+                p1PowerUpTimer--;
+                if (p1PowerUpTimer === 0) p1ActiveEffect = null;
+            }
+            if (p2PowerUpTimer > 0) {
+                p2PowerUpTimer--;
+                if (p2PowerUpTimer === 0) p2ActiveEffect = null;
+            }
+            // Remove the powerup object once its collected AND the effects are done
+            if (powerUp && !powerUp.active && p1PowerUpTimer === 0 && p2PowerUpTimer === 0) powerUp = null;
+
+            // 7. Win Condition
+            let gameStatus = 'playing';
+            if (score1 >= WINNING_SCORE || score2 >= WINNING_SCORE) { gameStatus = 'ended'; }
+
+            // 8. Push state to Firestore
+            const roomRef = doc(db, "artifacts", appId, "public", "data", "pong_games", getServerRoomId(currentServerId));
+            updateDoc(roomRef, {
+                score1: score1,
+                score2: score2,
+                ball: ball,
+                status: gameStatus,
+                powerUp: powerUp,
+                p1PowerUpTimer: p1PowerUpTimer,
+                p2PowerUpTimer: p2PowerUpTimer,
+                p1ActiveEffect: p1ActiveEffect,
+                p2ActiveEffect: p2ActiveEffect,
+                lastUpdate: Date.now()
+            }).catch(e => console.error("Failed to push game state:", e));
+        }
+        
+        function resetBallState(goingRight) {
+             localState.ball = { 
+                x: 50, 
+                y: 50, 
+                vx: goingRight ? BALL_SPEED : -BALL_SPEED, 
+                vy: (Math.random() - 0.5) * BALL_SPEED * 0.5 
+             };
+        }
+        
+        function spawnPowerUp() {
+            const randomType = POWERUP_TYPES[Math.floor(Math.random() * POWERUP_TYPES.length)];
+            localState.powerUp = {
+                x: 30 + Math.random() * 40, 
+                y: 20 + Math.random() * 60, 
+                type: randomType.type,
+                active: true
+            };
+        }
+
+        // --- 7. Drawing and Rendering ---
+        
+        function resizeCanvas() {
+            gameWidth = container.clientWidth;
+            gameHeight = container.clientHeight;
+            canvas.width = gameWidth;
+            canvas.height = gameHeight;
+        }
+
+        function drawGame() {
+            const data = localState;
+            const theme = themes[data.theme] || themes.neon;
+            
+            // Determine effective paddle heights
+            const p1CurrentHeight = data.p1ActiveEffect === 'grow' ? PADDLE_HEIGHT_DEFAULT * 2 : PADDLE_HEIGHT_DEFAULT;
+            const p2CurrentHeight = data.p2ActiveEffect === 'grow' ? PADDLE_HEIGHT_DEFAULT * 2 : PADDLE_HEIGHT_DEFAULT;
+
+            // Background
+            ctx.fillStyle = theme.bg;
+            ctx.fillRect(0, 0, gameWidth, gameHeight);
+
+            // Center Line (Dashed)
+            ctx.strokeStyle = theme.colorLine;
+            ctx.lineWidth = 4;
+            ctx.setLineDash([10, 10]);
+            ctx.beginPath();
+            ctx.moveTo(gameWidth / 2, 0);
+            ctx.lineTo(gameWidth / 2, gameHeight);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Scores
+            ctx.font = '900 48px Inter';
+            ctx.fillStyle = theme.colorP1;
+            ctx.textAlign = 'center';
+            ctx.fillText(data.score1, gameWidth / 4, 60);
+            
+            ctx.fillStyle = theme.colorP2;
+            ctx.fillText(data.score2, gameWidth * 3 / 4, 60);
+            
+            // 1. Draw Paddles
+            // P1 (Left)
+            let x = gameWidth * 0.02;
+            let p1Y = (data.paddle1Y / 100) * gameHeight;
+            let p1H = p1CurrentHeight;
+            ctx.fillStyle = theme.colorP1;
+            ctx.fillRect(x, p1Y - p1H/2, 10, p1H);
+
+            // P2 (Right)
+            x = gameWidth * 0.98 - 10;
+            let p2Y = (data.paddle2Y / 100) * gameHeight;
+            let p2H = p2CurrentHeight;
+            ctx.fillStyle = theme.colorP2;
+            ctx.fillRect(x, p2Y - p2H/2, 10, p2H);
+            
+            // 2. Draw Ball
+            const ballX = (data.ball.x / 100) * gameWidth;
+            const ballY = (data.ball.y / 100) * gameHeight;
+            ctx.beginPath();
+            ctx.arc(ballX, ballY, 8, 0, Math.PI * 2);
+            ctx.fillStyle = theme.colorBall;
+            ctx.fill();
+            
+            // 3. Draw Power-up
+            if (data.powerUp && data.powerUp.active) {
+                const puInfo = POWERUP_TYPES.find(p => p.type === data.powerUp.type) || { color: '#808080', symbol: '?' };
+                const puX = (data.powerUp.x / 100) * gameWidth;
+                const puY = (data.powerUp.y / 100) * gameHeight;
+                
+                ctx.fillStyle = puInfo.color;
+                ctx.beginPath();
+                ctx.arc(puX, puY, 12, 0, Math.PI * 2);
+                ctx.shadowColor = puInfo.color;
+                ctx.shadowBlur = 10;
+                ctx.fill();
+                ctx.shadowBlur = 0; 
+                
+                ctx.font = '900 16px Inter';
+                ctx.fillStyle = theme.bg;
+                ctx.textAlign = 'center';
+                ctx.fillText(puInfo.symbol, puX, puY + 5);
+            }
+            
+            // 4. Draw Power-up Timers/Effects on Paddles
+            
+            // P1 Effect Glow
+            if (data.p1ActiveEffect) {
+                const puInfo = POWERUP_TYPES.find(p => p.type === data.p1ActiveEffect);
+                if (puInfo) {
+                    ctx.fillStyle = puInfo.color;
+                    ctx.globalAlpha = 0.5 + Math.sin(Date.now() / 150) * 0.2; // Pulsing alpha
+                    ctx.fillRect(gameWidth * 0.02, p1Y - p1H/2, 10, p1H);
+                    ctx.globalAlpha = 1.0;
+                }
+            }
+            
+            // P2 Effect Glow
+            if (data.p2ActiveEffect) {
+                const puInfo = POWERUP_TYPES.find(p => p.type === data.p2ActiveEffect);
+                if (puInfo) {
+                    ctx.fillStyle = puInfo.color;
+                    ctx.globalAlpha = 0.5 + Math.sin(Date.now() / 150) * 0.2;
+                    ctx.fillRect(gameWidth * 0.98 - 10, p2Y - p2H/2, 10, p2H);
+                    ctx.globalAlpha = 1.0;
+                }
+            }
+
+            // 5. Update game view controls based on state
+            if (gameView.classList.contains('hidden') === false) {
+                updateGameUI(data);
+            }
+        }
+
+        // --- 8. Main Loop ---
+
+        function gameLoop() {
+            handleInput();
+            if (isGameRunning && isHost) {
+                hostGameUpdate();
+            }
+            drawGame();
+            
+            requestAnimationFrame(gameLoop);
+        }
+        
+        function startGameLoop() {
+             if (!isGameRunning) {
+                isGameRunning = true;
+                requestAnimationFrame(gameLoop);
+             }
+        }
+
+
+        // --- Start Application ---
+        if (firebaseConfig) {
+            initFirebase();
+        } else {
+             statusMessage.textContent = "Error: Firebase configuration is missing.";
+        }
+    </script>
+</body>
+</html>
